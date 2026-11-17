@@ -160,13 +160,26 @@ def comparable_forecast(p1, pool):
     Returns {hour: [q05, q25, q50, q75, q95]} in viewer counts.
     """
     log_p1 = math.log(max(p1, 1.0))
+    # Log of each comparable's first hour, computed once: the kernels
+    # below compare the target's first hour against these, every hour.
+    log_first = [math.log(curve[1]) for curve in pool]
+    # If the target's first hour lies outside the comparables' range
+    # (GTA VI may open bigger than any past launch), widen both kernels
+    # by the excess distance instead of collapsing onto the single
+    # nearest launch: an out-of-range target deserves a broader pool.
+    excess = 0.0
+    if log_p1 > max(log_first):
+        excess = log_p1 - max(log_first)
+    elif log_p1 < min(log_first):
+        excess = min(log_first) - log_p1
+    sigma_a = KERNEL_SIGMA_A + excess
+    sigma_b = KERNEL_SIGMA_B + excess
     raw = {}
     for h in range(2, 25):
-        # A: kernel-weighted lognormal on ln(v_h / v_1), sigma = 1.0.
+        # A: kernel-weighted lognormal on ln(v_h / v_1).
         weighted = []
-        for curve in pool:
-            w = math.exp(-((log_p1 - math.log(curve[1])) ** 2)
-                         / (2.0 * KERNEL_SIGMA_A ** 2))
+        for curve, log_v1 in zip(pool, log_first):
+            w = math.exp(-((log_p1 - log_v1) ** 2) / (2.0 * sigma_a ** 2))
             weighted.append((math.log(curve[h] / curve[1]), w))
         total_w = sum(w for _, w in weighted)
         mu = sum(x * w for x, w in weighted) / total_w
@@ -175,13 +188,12 @@ def comparable_forecast(p1, pool):
         log_a = [log_p1 + mu + z * sd for z in Z]
 
         # B: kernel-weighted local-linear regression of ln(v_h) on
-        # ln(v_1), sigma = 1.5, slope clipped to [0, 1], plus the
-        # weighted empirical quantiles of the residuals.
+        # ln(v_1), slope clipped to [0, 1], plus the weighted
+        # empirical quantiles of the residuals.
         points = []
-        for curve in pool:
-            w = math.exp(-((log_p1 - math.log(curve[1])) ** 2)
-                         / (2.0 * KERNEL_SIGMA_B ** 2))
-            points.append((math.log(curve[1]), math.log(curve[h]), w))
+        for curve, log_v1 in zip(pool, log_first):
+            w = math.exp(-((log_p1 - log_v1) ** 2) / (2.0 * sigma_b ** 2))
+            points.append((log_v1, math.log(curve[h]), w))
         total_w = sum(w for _, _, w in points)
         mx = sum(x * w for x, _, w in points) / total_w
         my = sum(y * w for _, y, w in points) / total_w
